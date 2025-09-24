@@ -9,6 +9,7 @@ from utils.frontend import requestManager
 from utils.util_functions import prepare_weight
 from transformers import AutoTokenizer
 from utils.input_test import prefill_context
+import torch
 
 
 # from models.llama3_KVCacheTorch import Pipeline
@@ -37,7 +38,8 @@ tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
 
 
 
-weight_map_wzr = "/code/hf/hub/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/5f0b02c75b57c5855da9ae460ce51323ea669d8a"
+# weight_map_wzr = "/code/hf/hub/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/5f0b02c75b57c5855da9ae460ce51323ea669d8a"
+weight_map_wzr = "/root/nanoflow/hf/hub/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/8afb486c1db24fe5011ec46dfbe5b5dccdb575c2"
 # weight_map_wzr = "/code/hf/hub/models--meta-llama--Meta-Llama-3-70B-Instruct/snapshots/28bd9fa9d94b23cb6ded08f92d5672b2aabe695f"
 # weight_map_amd_kan = "/work1/kasikci/kanzhu/models/llama3-8b"
 # weight_map_yi = "/app/llama3-8b"
@@ -56,9 +58,9 @@ pipeline.init(weight_map_wzr, cached=True)
 # print(f"Reserved memory: {reserved_memory / 1024 / 1024} MB")
 # pipeline.config()
 def test_performance():
-    seq_len = 1024
-    global_batch_size = 2048
-    decode_batch_size = 640
+    seq_len = 512
+    global_batch_size = 256
+    decode_batch_size = 64
     prefill_batch_size = global_batch_size - decode_batch_size
 
     prefill_context_ids = tokenizer.encode(prefill_context) # which length is 1912.
@@ -188,27 +190,74 @@ def test_one_cycle():
 def profile_one_cycle():
     prefill_context_ids = tokenizer.encode(prefill_context) # which length is 1912.
     
+    # 添加调试信息
+    print("初始化 profile data...")
     pipeline.init_profile_data()
-
+    
+    # 检查 SM 配置
+    print(f"Total SM count: {pipeline.total_sm}")
+    print(f"SM counts list: {pipeline.sm_counts}")
+    
+    '''# 检查 gen_embedding 的实现映射
+    if hasattr(pipeline, 'gen_embedding'):
+        print(f"GenEmbedding impl_map keys: {list(pipeline.gen_embedding.impl_map.keys()) if hasattr(pipeline.gen_embedding, 'impl_map') else 'No impl_map'}")
+    else:
+        print("No gen_embedding found in pipeline")'''
+    
     stream_names = [ f"TEST_{i}" for i in range(len(pipeline.sm_counts)) ] + ["TEST_TOTAL"]
+    print("\nAvailable streams and their SM counts:")
     for stream_name in stream_names:
-        print(f"Stream: {stream_name}")
+        if stream_name in pipeline.profile_streams:
+            stream, sm_count = pipeline.profile_streams[stream_name]
+            print(f"Stream {stream_name}: SM count = {sm_count}")
+        else:
+            print(f"Warning: Stream {stream_name} not found in profile_streams")
+    
+    for stream_name in stream_names:
+        print(f"\nProcessing Stream: {stream_name}")
+        if stream_name not in pipeline.profile_streams:
+            print(f"Skipping stream {stream_name} as it's not configured")
+            continue
         pipeline.reset()
 
         # test for prefill
-        total_batch_sizes = [128, 256, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048]
+        # total_batch_sizes = [128, 256, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048]
+        # total_batch_sizes = [128, 256, 384, 512, 640]   #小批量测试        ---512报错out of memory
+        total_batch_sizes = [128, 256, 384, 512, 640]   #小批量测试        ---512报错out of memory
         # total_batch_sizes = [1024]
         for idx, total_batch_size in enumerate(total_batch_sizes):
             input = [(idx, prefill_context_ids[:total_batch_size].copy())]
-
-            pipeline.update(input, is_profile=True, stream_name=stream_name)
-            pipeline.profile_run()
+            
+            # 打印输入信息
+            print(f"\nPreparing to process batch:")
+            print(f"- Input length: {len(input)}")
+            print(f"- Input[0] shape: {len(input[0][1])}")
+            print(f"- Total batch size: {total_batch_size}")
+            
+            try:
+                # 确保输入数据在正确的设备上
+                if isinstance(input[0][1], torch.Tensor):
+                    print(f"- Input device: {input[0][1].device}")
+                else:
+                    print("- Input is not a tensor")
+                
+                pipeline.update(input, is_profile=True, stream_name=stream_name)
+                pipeline.profile_run()
+            except Exception as e:
+                print(f"\nError in batch processing:")
+                print(f"- Error type: {type(e).__name__}")
+                print(f"- Error message: {str(e)}")
+                raise
 
         # test for decode
-        total_batch_sizes = [128, 256, 384, 512, 640]
+        # total_batch_sizes = [128, 256, 384, 512, 640]
+        # total_batch_sizes = [128, 256, 384]  #小批量测试
+        total_batch_sizes = [128, 256]  #小批量测试
         # total_batch_sizes = [384]
         # prepare the decode inputs for a special input_length
-        input_length = 1024
+        # input_length = 1024
+        # input_length = 512  #测试用较小的长度，搭配384的batch_size out of memory了
+        input_length = 256  #测试用更小的长度
         output_length = 0
         prefill_input_ids = prefill_context_ids[:input_length]
 
@@ -234,6 +283,6 @@ def profile_one_cycle():
 
 # test_correctness()
 # test_correctness(use_kv_cache=False)
-test_performance()
+# test_performance()
 # test_one_cycle()
-# profile_one_cycle()
+profile_one_cycle()

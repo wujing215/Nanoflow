@@ -1,5 +1,7 @@
 git submodule update --init --recursive
 
+export  TORCH_CUDA_ARCH_LIST="8.0"
+
 conda install -c gurobi gurobi
 
 pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
@@ -53,13 +55,13 @@ cd pybind
 mkdir build
 cd build/
 cmake ..
-make -j 256
+make -j 32
 cd ../..
 
 # load llama3-8B weights
-cd core
-python weightSaver.py --config_path=../config_all/llama3-8B/1024.json
+# cd core
+# python weightSaver.py --config_path=../config_all/llama3-8B/1024.json
 
 # run llama3-8B model
 cd ../entry
-CUDA_VISIBLE_DEVICES=0 python run_llama3.py -l
+TORCH_CUDA_ARCH_LIST="8.0" CUDA_VISIBLE_DEVICES=1 python run_llama3.py -l

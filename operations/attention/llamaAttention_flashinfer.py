@@ -181,8 +181,9 @@ if platform_config.PLATFORM_CUDA:
             self.num_qo_heads = op_base.num_qo_heads // op_base.tp_size
             self.num_kv_heads = op_base.num_kv_heads // op_base.tp_size
             self.head_dim = op_base.head_dim
+           
         
-        def plan(self, qo_indicies, kv_indptr, kv_indices, kv_last_page_len, page_size,
+        '''def plan(self, qo_indicies, kv_indptr, kv_indices, kv_last_page_len, page_size,
                 causal=True, logits_soft_cap=0.0, pos_encoding_mode="NONE"):
             # print("PFAttnBatchedCudaImpl.plan")
             # print("qo_indicies: ", qo_indicies)
@@ -209,9 +210,55 @@ if platform_config.PLATFORM_CUDA:
                     causal=causal,
                     logits_soft_cap=logits_soft_cap,
                     pos_encoding_mode=pos_encoding_mode
-                )
+                )'''
+        def plan(self, qo_indicies, kv_indptr, kv_indices, kv_last_page_len, page_size, causal=True, logits_soft_cap=None, pos_encoding_mode="relative"):
+            # 确保输入张量在正确的设备上
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        def run(self, Q, kv_tuple, output):
+             # 验证输入参数
+            assert torch.is_tensor(qo_indicies), "qo_indicies must be a tensor"
+            assert torch.is_tensor(kv_indptr), "kv_indptr must be a tensor"
+            assert torch.is_tensor(kv_indices), "kv_indices must be a tensor"
+            
+            # 确保数据类型正确
+            qo_indicies = qo_indicies.to(torch.int32)
+            kv_indptr = kv_indptr.to(torch.int32)
+            kv_indices = kv_indices.to(torch.int32)
+            
+            # 添加设备和形状的检查
+            print(f"qo_indicies device: {qo_indicies.device}, shape: {qo_indicies.shape}")
+            print(f"kv_indptr device: {kv_indptr.device}, shape: {kv_indptr.shape}")
+            print(f"kv_indices device: {kv_indices.device}, shape: {kv_indices.shape}")
+            print(f"kv_last_page_len: {kv_last_page_len}")
+            print(f"page_size: {page_size}")
+
+            
+            # 确保所有输入在同一设备上
+            qo_indicies = qo_indicies.to(device)
+            kv_indptr = kv_indptr.to(device)
+            kv_indices = kv_indices.to(device)
+            
+            try:
+                self.wrapper.plan(
+                qo_indicies,
+                kv_indptr,
+                kv_indices,
+                kv_last_page_len,
+                self.num_qo_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                page_size,
+                causal=causal,
+                logits_soft_cap=logits_soft_cap,
+                pos_encoding_mode=pos_encoding_mode
+            )
+            except RuntimeError as e:
+                print(f"Error during plan execution: {e}")
+                print(f"Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f}MB")
+                print(f"Memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f}MB")
+                raise
+
+        '''def run(self, Q, kv_tuple, output):
             with torch.cuda.stream(self.stream):
                 if Q.shape[0] == 0:
                     return
@@ -226,6 +273,51 @@ if platform_config.PLATFORM_CUDA:
 
                 self.wrapper.run(Q, kv_tuple, out=output)
 
+                output = output.view(-1, self.num_qo_heads * self.head_dim)'''
+        def run(self, Q, kv_tuple, output):
+            with torch.cuda.stream(self.stream):
+                if Q.shape[0] == 0:
+                    return
+                
+                # 添加输入验证和调试信息
+                print("=== FlashInfer Attention Debug Info ===")
+                print(f"Q shape: {Q.shape}, device: {Q.device}, dtype: {Q.dtype}")
+                print(f"Output shape: {output.shape}, device: {output.device}, dtype: {output.dtype}")
+                
+                # 检查 kv_tuple 的内容
+                print("KV Tuple info:")
+                print(f"- K shape: {kv_tuple[0].shape}, device: {kv_tuple[0].device}, dtype: {kv_tuple[0].dtype}")
+                print(f"- V shape: {kv_tuple[1].shape}, device: {kv_tuple[1].device}, dtype: {kv_tuple[1].dtype}")
+                
+                # 关键修复：重塑Q和output的形状以匹配FlashInfer的期望
+                Q = Q.view(-1, self.num_qo_heads, self.head_dim)
+                output = output.view(-1, self.num_qo_heads, self.head_dim)
+                
+                # 确保张量连续且在正确的设备上
+                Q = Q.contiguous()
+                K = kv_tuple[0].contiguous()
+                V = kv_tuple[1].contiguous()
+                
+                try:
+                    # 在运行前同步 CUDA
+                    # torch.cuda.synchronize()
+                    
+                    # 清理 CUDA 缓存
+                    # torch.cuda.empty_cache()
+                    
+                    # 运行注意力计算
+                    self.wrapper.run(Q, kv_tuple, out=output)
+                    
+                    # 运行后同步
+                    # torch.cuda.synchronize()
+                except RuntimeError as e:
+                    print("\n=== Error Details ===")
+                    print(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f}MB")
+                    print(f"CUDA memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f}MB")
+                    print(f"Max memory allocated: {torch.cuda.max_memory_allocated() / 1024**2:.2f}MB")
+                    raise
+                
+                # 关键修复：恢复output的原始形状
                 output = output.view(-1, self.num_qo_heads * self.head_dim)
 
 

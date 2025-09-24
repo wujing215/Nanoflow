@@ -62,9 +62,14 @@ class Pipeline():
 
     def init_streams(self):
         self.main_stream = torch.cuda.Stream()
-        self.total_sm = 132
+        # 获取设备实际的 SM 数量
+        max_sms = torch.cuda.get_device_properties(0).multi_processor_count
+        self.total_sm = min(max_sms, 132)  # 使用实际 SM 数量和预期值中的较小值
+        print(f"Using total SM count: {self.total_sm} (device has {max_sms} SMs)")
+        
+        # 生成不超过实际 SM 数量的 sm_counts 列表
         self.sm_counts = [
-            i for i in range(8, 128, 8) # Assuming SM counts are in increments of 8
+            i for i in range(8, min(128, max_sms), 8) # Assuming SM counts are in increments of 8
         ]
         # [8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120]
         num_sm_counts = len(self.sm_counts)
@@ -73,10 +78,10 @@ class Pipeline():
         }
 
         self.streams: dict[CategoryType, dict[int, tuple[torch._C.Stream, int]]] = {}
-        for category in self.categories:
+        for category in self.categories:##
             self.streams[category] = {}
 
-            for i in range((num_sm_counts + 1) // 2):
+            '''for i in range((num_sm_counts + 1) // 2):
                 sm_count_1 = self.sm_counts[i]
                 sm_count_2 = self.sm_counts[num_sm_counts - 1 - i]
                 print(f"Creating green context streams for SM counts: {sm_count_1}, {sm_count_2}")
@@ -87,11 +92,21 @@ class Pipeline():
                 )
                 self.streams[category][sm_count_1] = (stream_1, sm_count_1)
                 self.streams[category][sm_count_2] = (stream_2, sm_count_2)
+            self.streams[category][self.total_sm] = (torch.cuda.Stream(), self.total_sm)'''
+
+            print("!!! WARNING: Bypassing green_ctx creation, creating standard CUDA streams for all SM counts. !!!")
+
+            # Iterate through each required SM count and create a standard stream
+            for sm_count in self.sm_counts:
+                stream = torch.cuda.Stream()
+                self.streams[category][sm_count] = (stream, sm_count)
+
+            # The original last line is still correct and needed
             self.streams[category][self.total_sm] = (torch.cuda.Stream(), self.total_sm)
 
         # Create green context streams for testing
         self.profile_streams: dict[str, tuple[torch._C.Stream, int]] = {}
-        for i in range((num_sm_counts + 1) // 2):
+        '''for i in range((num_sm_counts + 1) // 2):
             sm_count_1 = self.sm_counts[i]
             sm_count_2 = self.sm_counts[num_sm_counts - 1 - i]
             print(f"Creating green context streams for SM counts: {sm_count_1}, {sm_count_2}")
@@ -102,12 +117,32 @@ class Pipeline():
             )
             self.profile_streams[f"TEST_{i}"] = (stream_1, sm_count_1)
             self.profile_streams[f"TEST_{num_sm_counts - 1 - i}"] = (stream_2, sm_count_2)
+        self.profile_streams[f"TEST_TOTAL"] = (torch.cuda.Stream(), self.total_sm)'''
+
+        print("!!! 警告：正在绕过 green_ctx 创建，为性能分析创建标准的 CUDA 流。!!!")
+
+        for i in range((num_sm_counts + 1) // 2):
+            sm_count_1 = self.sm_counts[i]
+            sm_count_2 = self.sm_counts[num_sm_counts - 1 - i]
+            
+            # --- 这是关键的改动 ---
+            # 我们不再调用有问题的函数，而是创建两个标准的流。
+            stream_1 = torch.cuda.Stream()
+            stream_2 = torch.cuda.Stream()
+            # ----------------------------
+
+            # 其余用于存储流的原始逻辑保持不变。
+            self.profile_streams[f"TEST_{i}"] = (stream_1, sm_count_1)
+            self.profile_streams[f"TEST_{num_sm_counts - 1 - i}"] = (stream_2, sm_count_2)
+
+        # 原始代码的最后一行也是正确的，应当保留。
         self.profile_streams[f"TEST_TOTAL"] = (torch.cuda.Stream(), self.total_sm)
 
 
     def init_external_data(self):
         # self.kv_pool = DistKVPool(self.num_layers, self.num_kv_heads, self.head_dim, 2048, self.page_size, 1, self.device)
-        self.kv_pool = DistKVPool(self.num_layers, self.num_kv_heads, self.head_dim, 2048* 26, self.page_size, 1, self.device)
+        # self.kv_pool = DistKVPool(self.num_layers, self.num_kv_heads, self.head_dim, 2048* 26, self.page_size, 1, self.device)
+        self.kv_pool = DistKVPool(self.num_layers, self.num_kv_heads, self.head_dim, 10240, self.page_size, 1, self.device)
         self.kv_cache = BatchedDistKVCache(self.kv_pool)
     
     def reset(self):
@@ -259,9 +294,13 @@ class Pipeline():
         self.gen_embedding.setShape(self.hidden_dim, self.vocab_size)
         self.layerNormAttn.setShape(self.hidden_dim)
         self.kqv.setShape(self.kqv_heads * self.head_dim, self.hidden_dim).setParameter(1.0, 0.0)
-        self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
-        self.pfAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
-        self.ropeAppend.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
+        #self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
+        #self.pfAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
+        #self.ropeAppend.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
+        self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
+        self.pfAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
+        self.ropeAppend.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
+        
         self.o.setShape(self.hidden_dim, self.hidden_dim).setParameter(1.0, 1.0)
         self.layerNormFFN.setShape(self.hidden_dim)
         self.ug.setShape(self.intermediate_dim * 2, self.hidden_dim).setParameter(1.0, 0.0)
@@ -333,6 +372,41 @@ class Pipeline():
         self.getLogits.config_tag("torch", params)
         self.modelLayerNorm.config_tag("cuda", params)
         self.sample.config_tag("cuda", params)
+
+    '''def config_algorithm(self):
+        params = {
+            "use_cuda_graph": self.is_cuda_graph_enabled,
+        }
+
+        if 'torch' in self.gen_embedding.impl_map:
+            impl_tag = 'torch'
+        else:
+            impl_tag = list(self.gen_embedding.impl_map.keys())[0]
+        print(f"Using implementation: {impl_tag}")
+        # self.gen_embedding.config_tag(impl_tag, params)
+        self.gen_embedding.config_tag("cuda", params)
+        
+        if self.is_auto_search_enabled:
+            for op in self.model_operations:
+                print(f"op.name: {op.name}, op.original_name: {op.original_name}")
+                if op.original_name in self.profile_result["operations"]:
+                    algo_tag = self.profile_result["operations"][op.original_name][op.name]["algo_tag"]
+                    op.config_tag(algo_tag, params)
+        else:
+            self.layerNormAttn.config_tag("cuda", params)
+            self.kqv.config_tag("torch", params)
+            self.ropeAppend.config_tag("cuda", params)
+            self.decAttn.config_tag("batched_cuda", params)
+            self.pfAttn.config_tag("batched_cuda", params)
+            self.layerNormFFN.config_tag("cuda", params)
+            self.o.config_tag("torch", params)
+            self.ug.config_tag("torch", params)
+            self.activation.config_tag("cuda", params)
+            self.d.config_tag("torch", params)
+
+        self.getLogits.config_tag("torch", params)
+        self.modelLayerNorm.config_tag("torch", params)
+        self.sample.config_tag("torch", params)'''
 
 
     def config_streams(self):
@@ -435,6 +509,22 @@ class Pipeline():
         print(f"Total allocated: {bufferAllocator.total_allocated / 1024 / 1024} MB in {self.device}")
 
     def update(self, new_input_infos, decode_batch_size = 0, is_profile = False, stream_name: str = "TEST_TOTAL", profile_result_path: Optional[str] = None, use_cuda_graph: bool = False, use_nano_split: bool = False):
+        #print(f"\nPipeline update:")
+        #print(f"- Stream name: {stream_name}")
+        #print(f"- Is profile: {is_profile}")
+        #print(f"- Decode batch size: {decode_batch_size}")
+        if stream_name in self.profile_streams:
+            stream, sm_count = self.profile_streams[stream_name]
+            #print(f"- Stream SM count: {sm_count}")
+
+        # 检查 cumsum_input 的状态
+        '''if hasattr(self, 'cumsum_input'):
+            print(f"- Cumsum input type: {type(self.cumsum_input)}")
+            if isinstance(self.cumsum_input, torch.Tensor):
+                print(f"- Cumsum input device: {self.cumsum_input.device}")
+                print(f"- Cumsum input shape: {self.cumsum_input.shape}")
+        else:
+            print("- No cumsum_input found")'''
         # preprocess new_input_infos
         with prof_marker("update_step_0"):
             self.input_req_idx = []

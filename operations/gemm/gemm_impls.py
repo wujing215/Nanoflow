@@ -24,7 +24,19 @@ class GEMMTorchImpl(OperationImpl):
     def run(self, A, B, C, D):
         with torch.cuda.stream(self.stream):
             if self.op_base.sm_count is not None:
-                set_sm_count_target(self.op_base.sm_count)
+                # print(f"Current SM count: {self.op_base.sm_count}")       #---------debug
+                # print(f"Device max SMs: {torch.cuda.get_device_properties(0).multi_processor_count}")     #---------debug
+                # 添加SM count的验证
+                try:
+                    sm_count = int(self.op_base.sm_count)
+                    if sm_count <= 0 or sm_count > torch.cuda.get_device_properties(0).multi_processor_count:
+                        print(f"Warning: Invalid SM count {sm_count}, skipping set_sm_count_target")
+                    else:
+                        # print(f"Setting SM count to {sm_count}")      #---------debug
+                        set_sm_count_target(sm_count)
+                except Exception as e:
+                    print(f"Error setting SM count: {e}, skipping set_sm_count_target")
+            
             if self.bias or self.alpha != 1:
                 torch.addmm(C, A, B, beta=self.beta, alpha=self.alpha, out=D)
             else:
