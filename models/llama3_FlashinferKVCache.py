@@ -242,12 +242,15 @@ class Pipeline():
             self.all_layer_operations.extend(operation.children)
 
     def init_dependency(self):
+        # ">>"是自定义的“连接符”，表示数据流动方向，用于计算图构建
         self.global_input.outputs["tokens"] >> self.gen_embedding.inputs["token"]
 
         self.gen_embedding.outputs["output"] >> self.copy_embedding.inputs["input_0"]
+        # LayerNormAttn 的输入来自 copy_embedding
         self.copy_embedding.outputs["output_0"] >> self.layerNormAttn.inputs["input"]
         self.copy_embedding.outputs["output_1"] >> self.o.inputs["C"]
 
+        # LayerNormAttn 的输出去往 KQV
         self.layerNormAttn.outputs["output"] >> self.kqv.inputs["A"]
 
         self.kqv.outputs["D"] >> self.ropeAppend.inputs["kqv"]
@@ -297,7 +300,7 @@ class Pipeline():
         #self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
         #self.pfAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
         #self.ropeAppend.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim)
-        self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
+        self.decAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)   # tp_size是tensor parallel size，不等于1时用于多gpu场景
         self.pfAttn.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
         self.ropeAppend.setShape(self.num_kv_heads, self.num_qo_heads, self.head_dim, tp_size=1)
         
@@ -452,10 +455,10 @@ class Pipeline():
                         batch_idx=nano_op_info["batch_idx"],
                         batch_size=nano_op_info["batch_size"]
                     ))
-                    extra_links[nano_op_name] = nano_op_info["extra_dep"]
+                    extra_links[nano_op_name] = nano_op_info["extra_dep"]   #extra_links：记录每个 nano 批次的额外依赖（如 LayerNormAttn_0 依赖 KQV_0）
 
-                op_nanobatch_info_map[op_basename] = tuple(split_info_list)
-        else:
+                op_nanobatch_info_map[op_basename] = tuple(split_info_list) #op_nanobatch_info_map：记录每个算子的所有 nano 批次信息（每个批次的 idx 和 size）
+        else:   #如果没有profile data，默认分成两批，通过 decode_batch_size 和 global - decode 区分
             info = (
                 NanoOpInfo(
                     batch_idx=0,
@@ -476,12 +479,13 @@ class Pipeline():
                 "Activation": copy.deepcopy(info),
                 "D": copy.deepcopy(info),
             }
-            extra_links = {}
+            extra_links = {}    #这种情况下没有额外依赖
 
         print("op_nanobatch_info_map", op_nanobatch_info_map)
         print("extra_links", extra_links)
 
-        model_ops, addtional_virtual_ops = split_nanobatch(self.original_model_operations, op_nanobatch_info_map, extra_links)
+        model_ops, addtional_virtual_ops = split_nanobatch(self.original_model_operations, op_nanobatch_info_map, extra_links)  #调用 split_nanobatch 进行实际拆分
+        # split_nanobatch 会根据分批信息和依赖，把原始算子列表拆分为多个 nano 批次算子，并处理依赖关系。
         self.model_operations = model_ops
         self.all_operations = []
         self.all_layer_operations = []

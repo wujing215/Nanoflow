@@ -280,14 +280,14 @@ if platform_config.PLATFORM_CUDA:
                     return
                 
                 # 添加输入验证和调试信息
-                print("=== FlashInfer Attention Debug Info ===")
-                print(f"Q shape: {Q.shape}, device: {Q.device}, dtype: {Q.dtype}")
-                print(f"Output shape: {output.shape}, device: {output.device}, dtype: {output.dtype}")
+                #print("=== FlashInfer Attention Debug Info ===")
+                #print(f"Q shape: {Q.shape}, device: {Q.device}, dtype: {Q.dtype}")
+                #print(f"Output shape: {output.shape}, device: {output.device}, dtype: {output.dtype}")
                 
                 # 检查 kv_tuple 的内容
-                print("KV Tuple info:")
-                print(f"- K shape: {kv_tuple[0].shape}, device: {kv_tuple[0].device}, dtype: {kv_tuple[0].dtype}")
-                print(f"- V shape: {kv_tuple[1].shape}, device: {kv_tuple[1].device}, dtype: {kv_tuple[1].dtype}")
+                #print("KV Tuple info:")
+                #print(f"- K shape: {kv_tuple[0].shape}, device: {kv_tuple[0].device}, dtype: {kv_tuple[0].dtype}")
+                #print(f"- V shape: {kv_tuple[1].shape}, device: {kv_tuple[1].device}, dtype: {kv_tuple[1].dtype}")
                 
                 # 关键修复：重塑Q和output的形状以匹配FlashInfer的期望
                 Q = Q.view(-1, self.num_qo_heads, self.head_dim)

@@ -36,7 +36,7 @@ class Redist(Operations):
     def __init__(self, name, device, num_inputs, num_outputs):
         super().__init__(name, device)
         self.name = name
-        self.isVirtual = True
+        self.isVirtual = True   # 标记为虚拟算子（不参与实际计算，只做数据流分发/聚合）
         self.isCopy = False
         self.isRedist = True
         self.num_inputs = num_inputs
