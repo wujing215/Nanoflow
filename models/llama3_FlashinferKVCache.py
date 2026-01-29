@@ -444,7 +444,7 @@ class Pipeline():
             operation.set_stream(stream_tuple)
 
     def nanobatch_split(self):
-        op_nanobatch_info_map: dict[str, tuple[NanoOpInfo, ...]] = {}
+        op_nanobatch_info_map: dict[str, tuple[NanoOpInfo, ...]] = {}       #NanoOpInfo类 记录每个 nano 批次的索引和大小
         extra_links: dict[str, list[tuple[str, bool]]] = {}
         if self.is_auto_search_enabled:
             operations = self.profile_result["operations"]
@@ -486,14 +486,15 @@ class Pipeline():
 
         model_ops, addtional_virtual_ops = split_nanobatch(self.original_model_operations, op_nanobatch_info_map, extra_links)  #调用 split_nanobatch 进行实际拆分
         # split_nanobatch 会根据分批信息和依赖，把原始算子列表拆分为多个 nano 批次算子，并处理依赖关系。
-        self.model_operations = model_ops
+
+        self.model_operations = model_ops   # 更新Pipeline的算子列表，是后续执行/调度的实际算子对象
         self.all_operations = []
         self.all_layer_operations = []
         for op in model_ops + self.virtual_operations + addtional_virtual_ops:
             print("op.name", op.name, op.batch_size)
-            self.all_operations.append(op)
+            self.all_operations.append(op)      # 包含所有算子，包括实际算子、原本的虚拟算子和新增的虚拟算子
         for operation in model_ops:
-            self.all_layer_operations.extend(operation.children)
+            self.all_layer_operations.extend(operation.children)    # 把每个算子的 `children`（即每一层的 Operation_Layer 对象）都加进来。
 
     def update_allocate_buffers(self):
         # Build list of buffers(op_device)
@@ -517,7 +518,7 @@ class Pipeline():
         #print(f"- Stream name: {stream_name}")
         #print(f"- Is profile: {is_profile}")
         #print(f"- Decode batch size: {decode_batch_size}")
-        if stream_name in self.profile_streams:
+        if stream_name in self.profile_streams:     # 根据 stream_name 选择当前 CUDA stream 和 SM 数量，便于多流/多SM测试。
             stream, sm_count = self.profile_streams[stream_name]
             #print(f"- Stream SM count: {sm_count}")
 
@@ -533,23 +534,27 @@ class Pipeline():
         with prof_marker("update_step_0"):
             self.input_req_idx = []
             self.input_ids = []
-            for item in new_input_infos:
+            for item in new_input_infos:       # new_input_infos: list of (request_idx, input_ids)
                 # print("item", item)
                 self.input_req_idx.append(item[0])
                 self.input_ids.append(item[1])
         with prof_marker("update_step_1"):
             # concatenate input_ids into a single tensor
+            # 将输入数据拆分为 request 索引和 token id 列表，展平成一维，生成输入张量
             flattened = [item for sublist in self.input_ids for item in sublist]
             global_batch_size = len(flattened)
         with prof_marker("update_step_3"):
+            # torch.tensor(flattened, ...) 构造一个一维的输入张量，方便批量处理和拷贝到模型的输入 buffer
             input_tensor = torch.tensor(flattened, dtype=torch.int32, device=self.device)
 
         # some assertions and configuration settings
+        # 判断是否需要重新分配 buffer， 如果 batch size 发生变化，需要重新分配 buffer 和重建算子结构。
         if global_batch_size != self.global_batch_size or decode_batch_size != self.decode_batch_size:
             self.buffer_fixed = False
         else:
             self.buffer_fixed = True
 
+        # 配置 CUDA Graph 相关参数，支持 CUDA Graph 加速，相关参数在此配置。
         self.plan_cuda_graph = False
         if use_cuda_graph and self.is_cuda_graph_enabled:
             assert decode_batch_size == self.decode_batch_size and global_batch_size == self.global_batch_size, "decode_batch_size and global_batch_size must be the same when use_cuda_graph is True"
@@ -559,6 +564,7 @@ class Pipeline():
             self.is_cuda_graph_enabled = False
         self.is_cuda_graph_enabled = use_cuda_graph
 
+        # 加载 profile_data，如果有 profile_data 路径，则加载 auto-search 结果，后续用于算子拆分和流配置
         if profile_result_path is not None:
             self.is_auto_search_enabled = True
             with open(profile_result_path, "r") as f:
@@ -568,18 +574,20 @@ class Pipeline():
             self.profile_result = None
 
         # update if batch size or decode batch size has changed
+        # 如果有变动（buffer_fixed=T，在上面有判断过），则重新分配 buffer 和拆分算子
         if not self.buffer_fixed:
             with prof_marker("update_step_2"):
                 self.global_batch_size = global_batch_size
-                self.decode_batch_size = decode_batch_size
+                self.decode_batch_size = decode_batch_size  # 更新 batch size
                 # print(f"batch_size: {self.batch_size}")
                 # print("decode_batchsize: ", decode_batchsize)
                 self.clear_batch_size()
-                self.config_batch_size()
+                self.config_batch_size()    # 清空并重新配置所有算子的 batch size
                 if use_nano_split:
-                    self.nanobatch_split()
-                self.update_allocate_buffers()
+                    self.nanobatch_split()      # 重新拆分算子
+                self.update_allocate_buffers()  # 重新分配 buffer
                 # print("finish update_allocate_buffers")
+                # 配置流、算法、执行器：
                 if is_profile:
                     self.profile_config_streams(self.profile_streams[stream_name])
                 else:
